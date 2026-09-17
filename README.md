@@ -4,6 +4,8 @@ A static, step-by-step tutorial for a Debian VPS, OpenClaw, a private Nextcloud 
 
 Read the published guide at https://hamza221.github.io/openclaw-nextcloud-guide/ or open index.html locally. The page has no external fonts, analytics, or JavaScript dependencies.
 
+Read the [complete tutorial in Markdown](TUTORIAL.md) directly on GitHub if the website is unavailable.
+
 ## Scope
 
 This guide excludes production Nextcloud and AIO installation. It uses nextcloud/nextcloud-docker-dev and links to the app documentation for builds and tests.
@@ -11,6 +13,8 @@ This guide excludes production Nextcloud and AIO installation. It uses nextcloud
 The source walkthrough used OpenClaw 2026.9.4 on Debian 13. The guide was reviewed against upstream documentation on 2026-09-17. The revised recipe has not been executed end to end on a clean VPS. Moving upstream defaults remain moving; record source revisions and image digests for your deployment.
 
 ## Files
+
+- TUTORIAL.md: the full tutorial, including every command and optional section.
 
 - index.html: tutorial, readable without JavaScript.
 - tutorial.html: a self-contained offline HTML copy with embedded example downloads.
