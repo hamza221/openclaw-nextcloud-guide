@@ -13,6 +13,7 @@ The source walkthrough used OpenClaw 2026.9.4 on Debian 13. The guide was review
 ## Files
 
 - index.html: tutorial, readable without JavaScript.
+- tutorial.html: a self-contained offline HTML copy with embedded example downloads.
 - assets/: local styling and copy-button code.
 - examples/: Dockerfile and Compose overlays referenced by the guide.
 - templates/: reusable development workflow instructions.
