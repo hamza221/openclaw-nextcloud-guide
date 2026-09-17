@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="A practical guide to OpenClaw on a Debian VPS, with private Nextcloud development, GitHub mentions, Talk and browser testing."><title>OpenClaw for Nextcloud development</title><link rel="stylesheet" href="assets/style.css"><script src="assets/app.js" defer></script></head>
+<body><a class="skip" href="#start">Skip to tutorial</a><header><a class="brand" href="#">FIELD NOTES <span>/ 01</span></a><a href="https://github.com/hamza221/openclaw-nextcloud-guide">View on GitHub ↗</a></header><div class="layout"><nav aria-label="Tutorial steps"><p class="navtitle">In this guide</p><a href="#start"><span>00</span>Before you start</a><a href="#host"><span>01</span>Prepare Debian and Docker</a><a href="#install"><span>02</span>Install OpenClaw with persistent tools</a><a href="#dashboard"><span>03</span>Open the dashboard through SSH</a><a href="#domain"><span>04</span>Optional: use a domain with a client certificate</a><a href="#dev"><span>05</span>Create the Nextcloud development instance</a><a href="#docker-access"><span>06</span>Give OpenClaw access to the dev stack</a><a href="#browser"><span>07</span>Verify browser testing and screenshots</a><a href="#github"><span>08</span>Connect a GitHub bot account</a><a href="#mentions"><span>09</span>Handle GitHub mentions by polling</a><a href="#talk"><span>10</span>Connect the development Talk instance</a><a href="#memory"><span>11</span>Use keyword memory without embeddings</a><a href="#workflow"><span>12</span>Save the development workflow</a><a href="#troubleshoot"><span>13</span>When something fails</a><a href="#finish"><span>14</span>Check the complete flow</a><button id="print" type="button">Print or save as PDF</button></nav><main><div class="hero"><p class="eyebrow">Debian VPS · Docker · Development</p><h1>OpenClaw for<br>Nextcloud development</h1><p class="lead">Set up an assistant that can reproduce bugs, test changes, and work with you in GitHub and Talk.</p><div class="meta"><span>Step-by-step guide</span><span>Updated 17 Sep 2026</span><span>macOS + Chrome</span></div></div><section id="start"><h2>Before you start</h2>
+<p>This guide builds a Nextcloud development assistant on a Debian VPS. You will run OpenClaw in Docker, connect a GitHub bot account, give it a private Nextcloud test instance, and add Talk messages and scheduled work.</p>
+<p>Use a dedicated development VPS. The original walkthrough used Debian 13, four CPU cores, 16 GB of RAM, and about 200 GB of disk. Those are reference specs, not measured minimum requirements. You also need SSH access, a GitHub account for the bot, and a model provider account.</p>
+<p>Commands marked <b>VPS</b> run on the server. Commands marked <b>Mac</b> run on your laptop. Blocks marked <b>OpenClaw chat</b> are instructions to send to the bot. Copy the command itself, without a terminal prompt or previous output.</p>
+<table><tr><th>Example</th><th>Replace with</th></tr><tr><td><code>203.0.113.10</code></td><td>Your VPS IP address</td></tr><tr><td><code>claw.example.com</code></td><td>Your dashboard domain, optional</td></tr><tr><td><code>YOUR_BOT</code></td><td>The bot's GitHub username</td></tr><tr><td><code>YOUR_GITHUB_LOGIN</code></td><td>Your own GitHub username</td></tr><tr><td><code>nextcloud-bot</code></td><td>The OpenClaw agent ID used in this guide</td></tr></table>
+<p>The walkthrough was assembled on 17 September 2026. The source session used OpenClaw 2026.9.4. Current upstream documentation informed the revised steps. This revised recipe has not been run end to end on a fresh VPS. Record your image digests and Git revisions so you can reproduce your own setup.</p>
+<aside class="note">This is a development guide. It does not install Nextcloud AIO or a production Nextcloud service. Nextcloud development branches are not an LTS release. The optional public hostname serves only the OpenClaw dashboard.</aside></section><section id="host"><h2>1. Prepare Debian and Docker</h2>
+<p>Connect from your Mac. These server commands assume a root shell, as in the original walkthrough.</p>
+<div class="codebox"><div class="codehead"><span>Mac · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>ssh root@203.0.113.10</code></pre></div><div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>apt update
+apt upgrade
+apt install -y ca-certificates curl git nano openssl sudo python3</code></pre></div>
+<p>Install Docker Engine and the Compose plugin using the <a href="https://docs.docker.com/engine/install/debian/#install-using-the-repository">official Debian repository instructions</a>. Use their Debian package list, including <code>docker-compose-plugin</code>. Then verify:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>docker version
+docker compose version
+docker ps
+dpkg --audit</code></pre></div>
+<p>This guide uses Compose's <code>!override</code> support, which requires Compose 2.24.4 or newer. Compose 5 also supports it. Keep SSH available in your provider firewall. Open TCP 80 and 443 only if you use the optional domain step. Do not open the gateway, development, or browser debugging ports to the internet.</p>
+<aside class="note">If apt reports a lock, inspect the process named in the error and let active package work finish. Do not delete lock files. If nano cannot open <code>xterm-ghostty</code>, run <code>TERM=xterm-256color nano FILENAME</code>.</aside></section><section id="install"><h2>2. Install OpenClaw with persistent tools</h2>
+<p>The bot needs GitHub CLI, Docker CLI, and a browser inside its container. Installing them by hand in a running container loses them at recreation. Build them into an image instead.</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>git clone https://github.com/openclaw/openclaw.git /opt/openclaw
+cd /opt/openclaw
+git rev-parse HEAD &gt; tutorial-source-revision.txt
+docker pull ghcr.io/openclaw/openclaw:latest-browser
+docker image inspect ghcr.io/openclaw/openclaw:latest-browser --format &#x27;{{index .RepoDigests 0}}&#x27; &gt; tutorial-base-image.txt</code></pre></div>
+<p>Save <a href="examples/Dockerfile.tools" download>Dockerfile.tools</a> as <code>/opt/openclaw/Dockerfile.tools</code>. It extends the official browser image and installs the command-line tools. Build using the recorded base digest:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw
+docker build --build-arg BASE_IMAGE=&quot;$(cat tutorial-base-image.txt)&quot; -f Dockerfile.tools -t openclaw:dev-tools .</code></pre></div>
+<p>Before running onboarding, bind the stock Compose ports to localhost. The setup script explicitly selects its own Compose file, so an override alone is not enough for its first start. This edit stops if upstream changes the expected port entries:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>python3 - &lt;&lt;&#x27;PYCODE&#x27;
+from pathlib import Path
+p = Path(&#x27;docker-compose.yml&#x27;)
+s = p.read_text()
+for variable, port in [(&#x27;OPENCLAW_GATEWAY_PORT&#x27;,18789), (&#x27;OPENCLAW_BRIDGE_PORT&#x27;,18790), (&#x27;OPENCLAW_MSTEAMS_PORT&#x27;,3978)]:
+    old = &#x27;&quot;${&#x27; + variable + &#x27;:-&#x27; + str(port) + &#x27;}:&#x27; + str(port) + &#x27;&quot;&#x27;
+    new = &#x27;&quot;127.0.0.1:&#x27; + str(port) + &#x27;:&#x27; + str(port) + &#x27;&quot;&#x27;
+    if s.count(old) != 1:
+        raise SystemExit(&#x27;Port layout changed. Review docker-compose.yml before continuing.&#x27;)
+    s = s.replace(old, new)
+p.write_text(s)
+PYCODE
+export OPENCLAW_IMAGE=openclaw:dev-tools
+bash ./scripts/docker/setup.sh --offline</code></pre></div>
+<p>The offline flag reuses the local image instead of looking for that custom tag in a registry. Model authentication still needs network access.</p>
+<ol><li>Choose local gateway mode, port <code>18789</code>, and token authentication.</li><li>Choose LAN binding inside the container. Docker publishes it only on the VPS loopback address.</li><li>Choose the OpenAI OAuth option offered by your version. Complete the browser flow on your Mac. Follow the displayed headless callback instructions if needed.</li><li>Keep Tailscale off for this recipe and skip channels for now. Skip installing a systemd service inside the container.</li><li>Choose an available model and run the live completion check.</li></ol>
+<p>See the <a href="https://docs.openclaw.ai/install/docker">Docker guide</a> and <a href="https://docs.openclaw.ai/install/docker/compose-operations#openai-codex-oauth-headless-docker">headless OAuth instructions</a>. The available model names and account options may differ from the original session.</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>docker compose ps
+docker compose exec openclaw-gateway gh --version
+docker compose exec openclaw-gateway docker compose version
+curl --max-time 10 -fsS http://127.0.0.1:18789/healthz</code></pre></div><aside class="note">Keep <code>.env</code>, the OpenClaw state directories, and OAuth credentials private. Record image digests and source revisions, but never publish the generated token.</aside></section><section id="dashboard"><h2>3. Open the dashboard through SSH</h2>
+<p>Start a tunnel on your Mac and leave this terminal open:</p>
+<div class="codebox"><div class="codehead"><span>Mac · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18789:127.0.0.1:18789 root@203.0.113.10</code></pre></div>
+<p>Open <a href="http://127.0.0.1:18789/">http://127.0.0.1:18789/</a> in Chrome. On the VPS, get the dashboard access link:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw
+docker compose exec openclaw-gateway node dist/index.js dashboard --no-open</code></pre></div>
+<p>Use the token locally. If device pairing is requested, list pending devices and approve only the request from your browser:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>docker compose exec openclaw-gateway node dist/index.js devices list
+docker compose exec openclaw-gateway node dist/index.js devices approve REQUEST_ID</code></pre></div>
+<p>In the dashboard, create or select an agent with ID <code>nextcloud-bot</code>. Confirm the ID before using later agent-specific commands. Give it a clear role:</p>
+<div class="codebox"><div class="codehead"><span>OpenClaw chat</span><button class="copy" type="button">Copy</button></div><pre><code>You are nextcloud-bot, a development assistant for Nextcloud apps. Work with JavaScript, Vue, and PHP. Explain findings plainly. Use the private development instance for code changes, reproductions, and screenshots.</code></pre></div></section><section id="domain"><h2>4. Optional: use a domain with a client certificate</h2>
+<p>You can stop at the SSH tunnel. For an actual domain, this step requires Chrome to present your client certificate before Caddy forwards dashboard traffic. Keep OpenClaw's token authentication enabled as well.</p>
+<p>Create an A record for <code>claw.example.com</code> pointing to your VPS. Add an AAAA record only if IPv6 reaches the same service. Allow inbound TCP 80 and 443. If another proxy already owns those ports, add the site to that proxy rather than starting a second Caddy.</p>
+<details><summary>Show the certificate and Caddy setup</summary>
+<p>On the VPS, generate a private CA and a client identity. The CA key can issue new client identities, so keep it private. This example creates a client certificate valid for 90 days.</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>install -d -m 700 /root/openclaw-certs
+cd /root/openclaw-certs
+umask 077
+openssl req -x509 -newkey rsa:3072 -nodes -keyout ca.key -out ca.crt -days 365 -subj &quot;/CN=OpenClaw Client CA&quot; -addext &quot;basicConstraints=critical,CA:TRUE&quot; -addext &quot;keyUsage=critical,keyCertSign,cRLSign&quot;
+openssl req -new -newkey rsa:3072 -nodes -keyout client.key -out client.csr -subj &quot;/CN=OpenClaw Browser Access&quot;
+cat &gt; client.ext &lt;&lt;&#x27;EOF&#x27;
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+extendedKeyUsage=clientAuth
+EOF
+openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 90 -sha256 -extfile client.ext
+openssl verify -purpose sslclient -CAfile ca.crt client.crt
+openssl pkcs12 -export -out openclaw-access.p12 -inkey client.key -in client.crt -certfile ca.crt -name &quot;OpenClaw access&quot;</code></pre></div>
+<p>Choose an export password when prompted. Copy only the public CA certificate into Caddy's configuration directory:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>install -d -m 755 /opt/openclaw-proxy/client-ca
+install -m 644 /root/openclaw-certs/ca.crt /opt/openclaw-proxy/client-ca/ca.crt</code></pre></div>
+<p>Save this as <code>/opt/openclaw-proxy/compose.yaml</code>:</p>
+<div class="codebox"><div class="codehead"><span>VPS · compose.yaml</span><button class="copy" type="button">Copy</button></div><pre><code>services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./client-ca:/etc/caddy/client-ca:ro
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  caddy_data:
+  caddy_config:</code></pre></div>
+<p>Save this as <code>/opt/openclaw-proxy/Caddyfile</code>, after replacing the domain:</p>
+<div class="codebox"><div class="codehead"><span>VPS · Caddyfile</span><button class="copy" type="button">Copy</button></div><pre><code>claw.example.com {
+    tls {
+        client_auth {
+            mode require_and_verify
+            trust_pool file {
+                pem_file /etc/caddy/client-ca/ca.crt
+            }
+        }
+    }
+    reverse_proxy 127.0.0.1:18789
+}</code></pre></div>
+<p>Start Caddy and set the dashboard origin:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw-proxy
+docker compose up -d
+docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+cd /opt/openclaw
+docker compose exec openclaw-gateway node dist/index.js config set gateway.controlUi.allowedOrigins &#x27;[&quot;https://claw.example.com&quot;,&quot;http://127.0.0.1:18789&quot;]&#x27; --strict-json
+docker inspect &quot;$(docker compose ps -q openclaw-gateway)&quot; --format &#x27;{{range $name, $net := .NetworkSettings.Networks}}{{$name}} gateway={{$net.Gateway}}{{println}}{{end}}&#x27;</code></pre></div>
+<p>Host-network Caddy normally reaches the published port through a Docker bridge. Find the actual peer in gateway logs if it reports <code>proxy_attribution_required</code>. Trust only that address. The address below is an example, not a value to copy blindly:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>docker compose exec openclaw-gateway node dist/index.js config set gateway.trustedProxies &#x27;[&quot;172.19.0.1&quot;]&#x27; --strict-json
+docker compose restart --timeout 30 openclaw-gateway</code></pre></div>
+<p>Transfer the client identity to your Mac:</p>
+<div class="codebox"><div class="codehead"><span>Mac · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>scp root@203.0.113.10:/root/openclaw-certs/openclaw-access.p12 ~/Downloads/
+open ~/Downloads/openclaw-access.p12</code></pre></div>
+<p>Import it into your login keychain with its export password. Confirm it appears under My Certificates with its private key. Reopen Chrome, visit your domain, and select that identity when prompted. You do not need to mark your private CA as trusted for public server certificates. Caddy obtains the server certificate separately.</p>
+<p>Test both cases on the VPS. The first request must be rejected without a client certificate. The second should reach OpenClaw:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>curl --max-time 20 -I https://claw.example.com/
+curl --max-time 20 --cert /root/openclaw-certs/client.crt --key /root/openclaw-certs/client.key -I https://claw.example.com/</code></pre></div>
+<p>After any later Caddyfile edit, validate and reload it. Validation alone does not apply changes:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw-proxy
+docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile</code></pre></div>
+<p>References: <a href="https://caddyserver.com/docs/caddyfile/directives/tls">Caddy client authentication</a>, <a href="https://caddyserver.com/docs/caddyfile/directives/reverse_proxy">forwarded headers</a>, and <a href="https://docs.openclaw.ai/gateway/security">OpenClaw proxy security</a>.</p></details></section><section id="dev"><h2>5. Create the Nextcloud development instance</h2>
+<p>Use the official <a href="https://nextcloud.github.io/nextcloud-docker-dev/">nextcloud-docker-dev documentation</a> for app builds, PHP versions, test mail, and database choices. The steps here connect that environment to OpenClaw.</p>
+<p>Run the bootstrap on the VPS. This uses the correct repository, not <code>nextcloud/docker-ci</code>. Talk's repository and app ID are <code>spreed</code>.</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>git clone https://github.com/nextcloud/nextcloud-docker-dev.git /srv/nextcloud-dev
+cd /srv/nextcloud-dev
+./bootstrap.sh --clone-no-blobs calendar contacts mail deck spreed</code></pre></div>
+<p>Before starting containers, edit <code>/srv/nextcloud-dev/.env</code>. Keep the generated paths and database settings. Set these values, replacing existing entries rather than duplicating them:</p>
+<div class="codebox"><div class="codehead"><span>VPS · .env settings</span><button class="copy" type="button">Copy</button></div><pre><code>COMPOSE_PROJECT_NAME=nextcloud-dev
+PROTOCOL=http
+DOMAIN_SUFFIX=.test
+IP_BIND=127.0.0.1
+PROXY_PORT_HTTP=8080
+PROXY_PORT_HTTPS=8443
+NEXTCLOUD_AUTOINSTALL_APPS=&quot;viewer profiler hmr_enabler&quot;</code></pre></div>
+<p>Install the core first. Build the Groupware apps before enabling them. Create a shared Docker network and save <a href="examples/nextcloud.override.yml" download>nextcloud.override.yml</a> as <code>/srv/nextcloud-dev/docker-compose.override.yml</code>.</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>docker network create nc-dev-access
+cd /srv/nextcloud-dev
+docker compose config --quiet
+docker compose up -d nextcloud
+docker compose exec --user www-data nextcloud php occ status</code></pre></div>
+<p>Wait for installation to finish. Then follow each app's source-build instructions. The checkouts live under <code>/srv/nextcloud-dev/workspace/server/apps-extra/</code>.</p>
+<ul><li><a href="https://github.com/nextcloud/calendar#readme">Calendar</a></li><li><a href="https://github.com/nextcloud/contacts#readme">Contacts</a></li><li><a href="https://github.com/nextcloud/mail#readme">Mail</a></li><li><a href="https://github.com/nextcloud/deck#readme">Deck</a></li><li><a href="https://github.com/nextcloud/spreed#readme">Talk</a></li></ul>
+<p>Match each repository's Node and package-manager requirements. If OpenClaw's <code>NODE_ENV=production</code> omits frontend build tools, use the app's documented development install, such as <code>npm ci --include=dev</code>. Keep app PHP test dependencies separate from the running server where they conflict with server classes. A package-lock mismatch needs investigation; do not silently rewrite it.</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /srv/nextcloud-dev
+docker compose exec --user www-data nextcloud php occ app:enable calendar contacts mail deck spreed
+docker compose exec --user www-data nextcloud php occ app:list
+docker compose exec --user www-data nextcloud php occ config:system:set trusted_domains 10 --value=nextcloud.test
+curl --max-time 10 -I -H &quot;Host: nextcloud.test&quot; http://127.0.0.1:8080/</code></pre></div>
+<p>For local Chrome access, add <code>127.0.0.1 nextcloud.test</code> to your Mac's <code>/etc/hosts</code>, then tunnel port 8080:</p>
+<div class="codebox"><div class="codehead"><span>Mac · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:8080:127.0.0.1:8080 root@203.0.113.10</code></pre></div>
+<p>Open <code>http://nextcloud.test:8080</code>. Upstream uses development credentials such as <code>admin / admin</code>. Keep this instance private and use test data only.</p>
+<aside class="note">The original bot wrote custom helpers named <code>bin/nc-dev</code>, <code>bin/update-latest</code>, and <code>bin/capture-screenshot.cjs</code>. The chat exports do not contain their source. They are not upstream commands and this tutorial does not claim to ship them.</aside></section><section id="docker-access"><h2>6. Give OpenClaw access to the dev stack</h2>
+<p>Docker resolves bind-mount source paths on the VPS, even when the command comes from another container. Mount the development directory at the same absolute path on both sides. This avoids the empty-checkout problem from the original setup.</p>
+<aside class="note">Access to <code>/var/run/docker.sock</code> gives the bot effective root control over this VPS. Use a dedicated development host and trusted users. A read-only socket mount does not make Docker API operations read-only.</aside>
+<p>Read the socket's group ID. Do not assume it is <code>989</code>:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>stat -c &#x27;%g&#x27; /var/run/docker.sock</code></pre></div>
+<p>Add <code>DOCKER_GID=THE_NUMBER_YOU_JUST_READ</code> to <code>/opt/openclaw/.env</code>. Save <a href="examples/openclaw.override.yml" download>openclaw.override.yml</a> as <code>/opt/openclaw/docker-compose.override.yml</code>. If you already have an override, merge these settings into it.</p>
+<div class="codebox"><div class="codehead"><span>VPS · docker-compose.override.yml</span><button class="copy" type="button">Copy</button></div><pre><code>services:
+  openclaw-gateway:
+    ports: !override
+      - &quot;127.0.0.1:18789:18789&quot;
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /srv/nextcloud-dev:/srv/nextcloud-dev
+      - ./gh-state:/home/node/.config/gh
+    environment:
+      GIT_CONFIG_GLOBAL: /home/node/.openclaw/gitconfig
+    group_add:
+      - &quot;${DOCKER_GID:?Set DOCKER_GID in .env}&quot;
+    extra_hosts:
+      - &quot;host.docker.internal:host-gateway&quot;
+    networks:
+      - default
+      - dev-access
+networks:
+  dev-access:
+    external: true
+    name: nc-dev-access</code></pre></div>
+<p>For this fresh development checkout, make the files writable by the image's node user. First verify its UID and GID:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw
+docker compose exec openclaw-gateway id</code></pre></div>
+<p>If the result is UID 1000 and primary GID 1000, run the following. If your image differs, use the actual values. The recursive ownership change is only for this dedicated development directory.</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>chown -R 1000:1000 /srv/nextcloud-dev
+install -d -m 700 -o 1000 -g 1000 /opt/openclaw/gh-state
+cd /opt/openclaw
+docker compose config --quiet &amp;&amp; docker compose up -d --no-build --force-recreate openclaw-gateway
+docker compose exec openclaw-gateway id
+docker compose exec openclaw-gateway docker ps
+docker compose exec openclaw-gateway getent hosts nextcloud.test
+docker compose exec -w /srv/nextcloud-dev openclaw-gateway docker compose ps</code></pre></div>
+<p>Run future source-control operations as that same user through the gateway. The bot can now use <code>http://nextcloud.test</code> on the shared network. Keep the development Compose project on its existing default network too; its database and Redis use it.</p>
+<p>Compose mounts, groups, networks, and image changes require recreation. <code>docker compose restart</code> alone does not apply them. See <a href="https://docs.docker.com/compose/how-tos/multiple-compose-files/merge/">Compose merge rules</a> and <a href="https://docs.docker.com/engine/storage/bind-mounts/">bind-mount paths</a>.</p></section><section id="browser"><h2>7. Verify browser testing and screenshots</h2>
+<p>The browser image supplies Chromium. Enable a headless managed browser and allow access to the named development host:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw
+docker compose exec openclaw-gateway node dist/index.js config set browser.enabled true
+docker compose exec openclaw-gateway node dist/index.js config set browser.headless true
+docker compose exec openclaw-gateway node dist/index.js config set browser.defaultProfile openclaw
+docker compose exec openclaw-gateway node dist/index.js config set browser.ssrfPolicy.allowedHostnames &#x27;[&quot;nextcloud.test&quot;]&#x27; --strict-json
+docker compose exec openclaw-gateway node dist/index.js browser --browser-profile openclaw start</code></pre></div>
+<p>If Chromium reports a sandbox error in your container, consult the <a href="https://docs.openclaw.ai/tools/browser/troubleshooting">Linux browser troubleshooting guide</a>. Do not disable its sandbox unless that is necessary for your dedicated test environment. Keep browser debugging ports private.</p>
+<div class="codebox"><div class="codehead"><span>OpenClaw chat</span><button class="copy" type="button">Copy</button></div><pre><code>Open http://nextcloud.test in the managed openclaw browser. Log in with the development account. Verify that Calendar renders, then save a screenshot under your persistent workspace. Inspect the image and report its path. If login or rendering fails, report the actual error.</code></pre></div>
+<p>A browser that can start has not yet proved it can access the app. Confirm the authenticated page and inspect the saved image. For a PR, use the same test data and viewport before and after, rebuild the app, and refresh cached assets. The original run caught an incorrect "after" screenshot that still loaded the old JavaScript.</p>
+<p>Reference: <a href="https://docs.openclaw.ai/tools/browser/configuration">browser configuration and private host access</a>.</p></section><section id="github"><h2>8. Connect a GitHub bot account</h2>
+<p>Create a separate GitHub account you control, with recovery access and two-factor authentication. In OpenClaw, use the agent's GitHub connection flow if your version offers it. Authorize the bot account in your local browser. The original version exposed this under Settings, Agents, Tools, GitHub.</p>
+<p>For a direct GitHub CLI login, run this inside the gateway and finish its browser/device flow:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw
+docker compose exec openclaw-gateway gh auth login --hostname github.com --git-protocol https --web
+docker compose exec openclaw-gateway gh auth status
+docker compose exec openclaw-gateway gh api user --jq .login
+docker compose exec openclaw-gateway gh auth setup-git</code></pre></div>
+<p>Use one credential owner consistently. A dashboard-managed credential may be injected only into agent runs; a plain shell can have different authentication. Verify identity and push access from the same execution context that will handle GitHub work. The override from step 6 persists CLI credentials in <code>/opt/openclaw/gh-state</code> and Git configuration inside the OpenClaw state directory. Keep both private.</p>
+<p>Set a Git author name and verified or GitHub no-reply email inside the bot's environment with <code>git config --global user.name</code> and <code>git config --global user.email</code>. Use a fork for contributions to upstream repositories. Follow each project's contribution and DCO requirements, including <code>git commit -s</code> when required.</p>
+<p>References: <a href="https://cli.github.com/manual/gh_auth_login">GitHub CLI login</a>, <a href="https://cli.github.com/manual/gh_auth_setup-git">Git credential setup</a>, and <a href="https://github.com/nextcloud/server/blob/master/CONTRIBUTING.md">Nextcloud contribution guidance</a>.</p></section><section id="mentions"><h2>9. Handle GitHub mentions by polling</h2>
+<p>Connecting GitHub does not turn mentions into commands. The original setup tried a custom webhook bridge, then replaced it with notification polling because the bot could not administer upstream webhooks.</p>
+<p>Polling needs no inbound GitHub endpoint. Keep the dashboard behind its client certificate. The custom poller implementation was not included in the exports, so the block below is a setup request with acceptance criteria, not an installer for an existing plugin.</p>
+<p>Create <code>GITHUB_COMMAND_ALLOWLIST.md</code> in the agent's persistent workspace. Start with your own GitHub login:</p>
+<div class="codebox"><div class="codehead"><span>Workspace · Markdown file</span><button class="copy" type="button">Copy</button></div><pre><code># Allowed GitHub command authors
+
+- YOUR_GITHUB_LOGIN</code></pre></div><div class="codebox"><div class="codehead"><span>OpenClaw chat</span><button class="copy" type="button">Copy</button></div><pre><code>Set up a GitHub notification check every five minutes for @YOUR_BOT.
+
+Only act on explicit mentions from users in GITHUB_COMMAND_ALLOWLIST.md and repositories in nextcloud/*. Match usernames and the exact owner name case-insensitively. Do not accept similarly named owners. Start with a baseline that skips old notifications.
+
+Read all notification pages and inspect the actual comment author and text. A notification is only a hint. Use thread ID plus updated_at to detect changes, and persist handled comment IDs to avoid repeated replies. New mentions in an already-seen thread must still work. Ignore deleted comments and the bot&#x27;s own messages.
+
+Prevent overlapping runs. Record a completed reply before marking the notification read. Handle retries without blindly posting twice. Keep state in persistent storage. Use a lightweight check when the installed scheduler supports it; otherwise explain the model cost of each scheduled run.
+
+Load the Nextcloud development workflow in every isolated run. Use /srv/nextcloud-dev and http://nextcloud.test. Acknowledge accepted mentions with an eyes reaction, then respond after doing the requested work. Do not merge or deploy.
+
+Show me the schedule, state location, authorization checks, and a dry-run result before enabling outbound replies.</code></pre></div>
+<p>Temporarily add a repository you control to the allowed repository list for testing. Send an allowed mention, repeat the check, then send a second mention in the same issue. You should see one reply per accepted comment. Also test an unlisted author and an out-of-scope repository. Both must produce no action. Remove the temporary test repository afterward if it should not remain authorized.</p>
+<p>GitHub supports a fixed set of reactions. Use <code>eyes</code> for acknowledgement; the elephant emoji is not a supported GitHub reaction. It can still be used in Talk.</p>
+<p>References: <a href="https://docs.openclaw.ai/automation/cron-jobs">OpenClaw automations</a>, <a href="https://docs.github.com/en/rest/activity/notifications">GitHub notifications</a>, and <a href="https://docs.github.com/en/rest/reactions/reactions">GitHub reactions</a>.</p>
+<details><summary>If you prefer webhooks</summary><p>You need an implementation that validates GitHub's HMAC signature, event type, author, repository, mention, and duplicate deliveries. You also need repository or organization permission to register the webhook. An OAuth connection alone does not grant that permission. Expose only the signed webhook route on a separate HTTPS endpoint; GitHub cannot use your personal browser client certificate. The custom bridge from the chats is not a downloadable package in this guide.</p><p>See <a href="https://docs.github.com/en/webhooks/using-webhooks/creating-webhooks">creating webhooks</a> and <a href="https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries">signature verification</a>.</p></details></section><section id="talk"><h2>10. Connect the development Talk instance</h2>
+<p>This step uses the private development instance. First build and enable Talk. Both containers share <code>nc-dev-access</code>, so the webhook can stay inside Docker.</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw
+docker compose exec openclaw-gateway node dist/index.js plugins install @openclaw/nextcloud-talk
+docker compose restart --timeout 30 openclaw-gateway</code></pre></div>
+<p>Generate a shared secret on the VPS and read it without adding its literal value to shell history:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>openssl rand -hex 32
+read -rsp &quot;Paste the generated Talk secret: &quot; TALK_SECRET
+printf &quot;\n&quot;
+cd /srv/nextcloud-dev
+docker compose exec --user www-data nextcloud php occ config:system:set allow_local_remote_servers --type=boolean --value=true
+docker compose exec --user www-data nextcloud php occ talk:bot:install &quot;OpenClaw&quot; &quot;$TALK_SECRET&quot; &quot;http://openclaw-gateway:8788/nextcloud-talk-webhook&quot; --feature webhook --feature response --feature reaction
+cd /opt/openclaw
+docker compose exec openclaw-gateway node dist/index.js channels add --channel nextcloud-talk --base-url http://nextcloud.test --secret &quot;$TALK_SECRET&quot;
+unset TALK_SECRET</code></pre></div>
+<p>Local-server access is enabled only on this private test instance. The shared secret must match at both ends. Configure the private base URL and webhook location:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>docker compose exec openclaw-gateway node dist/index.js config set channels.nextcloud-talk.network.dangerouslyAllowPrivateNetwork true
+docker compose exec openclaw-gateway node dist/index.js config set channels.nextcloud-talk.webhookPublicUrl http://openclaw-gateway:8788/nextcloud-talk-webhook</code></pre></div>
+<p>In Talk, add the bot to a room. In OpenClaw, bind the Talk channel to the <code>nextcloud-bot</code> agent, using the dashboard or the <a href="https://docs.openclaw.ai/channels/channel-routing">channel routing instructions</a>. Configure the channel's API user and app password through OpenClaw's setup UI. Use a Nextcloud account that belongs to that room; an inaccessible room may return 404. The API password is a Nextcloud app password, not the shared bot secret.</p>
+<p>For the original "answer everyone without a mention" behavior:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>docker compose exec openclaw-gateway node dist/index.js config set channels.nextcloud-talk.groupAllowFrom &#x27;[&quot;*&quot;]&#x27; --strict-json
+docker compose exec openclaw-gateway node dist/index.js config set channels.nextcloud-talk.rooms &#x27;{&quot;*&quot;:{&quot;enabled&quot;:true,&quot;requireMention&quot;:false}}&#x27; --strict-json
+docker compose restart --timeout 30 openclaw-gateway
+docker compose exec openclaw-gateway node dist/index.js channels status --probe</code></pre></div><aside class="note">Wildcard access means every member of a room containing the bot can address it. With Docker access enabled, use only trusted development rooms. For a shared deployment, use explicit room and sender allowlists.</aside>
+<p>Send a real Talk message and confirm a reply. An unsigned curl request only tests reachability. It does not prove the secret, room access, or response feature works.</p>
+<div class="codebox"><div class="codehead"><span>OpenClaw chat</span><button class="copy" type="button">Copy</button></div><pre><code>On Nextcloud Talk, acknowledge each accepted message with one fitting reaction before working on the reply. Use 🐘 when no other reaction fits. Save this preference in USER.md.</code></pre></div>
+<p>See the <a href="https://docs.openclaw.ai/channels/nextcloud-talk">OpenClaw Talk reference</a> and <a href="https://nextcloud-talk.readthedocs.io/en/latest/bots/">Nextcloud Talk bot documentation</a>. For an existing external Talk server, use its HTTPS base URL and a separate reachable, signed webhook endpoint. Its installation is outside this tutorial.</p></section><section id="memory"><h2>11. Use keyword memory without embeddings</h2>
+<p>The original bot could chat through OAuth but failed to rebuild memory because its embedding API account had no credit. A model login does not establish a funded embeddings configuration.</p>
+<p>For a demo, full-text search avoids embedding requests. These keys match the current memory schema and the original successful repair. Use your actual agent ID:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw
+docker compose exec openclaw-gateway node dist/index.js config set agents.entries.nextcloud-bot.memory.search.provider none
+docker compose exec openclaw-gateway node dist/index.js config set agents.entries.nextcloud-bot.memory.search.fallback none
+docker compose restart --timeout 30 openclaw-gateway
+docker compose exec openclaw-gateway node dist/index.js memory status --index --agent nextcloud-bot</code></pre></div>
+<p>Look for all files indexed, <code>Dirty: no</code>, and <code>FTS: ready</code>. "Embeddings unavailable" is expected in this mode. Keyword search remains available; semantic similarity search does not. Do not delete the agent database to repair an index because it also stores other agent state.</p>
+<p>Reference: <a href="https://docs.openclaw.ai/reference/memory-config">memory configuration</a>.</p></section><section id="workflow"><h2>12. Save the development workflow</h2>
+<p>Isolated jobs need the same environment instructions as your main chat. Add <a href="templates/nextcloud-dev-workflow.md" download>this workflow template</a> to the agent's persistent workspace instructions and reference it explicitly in every GitHub automation.</p>
+<div class="codebox"><div class="codehead"><span>Workspace · workflow template</span><button class="copy" type="button">Copy</button></div><pre><code>For every GitHub-originated Nextcloud task:
+1. Read the development workflow before probing for checkouts.
+2. Use /srv/nextcloud-dev. The app repositories are in workspace/server/apps-extra.
+3. Inspect Git status and the current branch. Never overwrite uncommitted work or switch away from another active task.
+4. Before baseline testing, update only clean default-branch checkouts with fast-forward-only pulls. Refresh server submodules and rebuild changed apps using their documented tool versions. Record the tested commits.
+5. For a PR, check out the requested revision deliberately. Do not replace it with latest main during verification.
+6. Check Compose services, occ status, and occ app:list before claiming the environment is missing.
+7. Use http://nextcloud.test in the managed browser. Seed test data when a reproduction needs it.
+8. Capture and inspect before/after screenshots with the same viewport and data. Refresh browser assets after rebuilding.
+9. Run the relevant app checks, then report what passed and what remains unverified.
+10. Clean up only your own fixtures and restore the prior branch when safe.</code></pre></div>
+<p>The transcript contains a useful failure case. A poller searched only three directories deep, missed the Contacts checkout, and posted a false blocker. A written path and service checks would have prevented it.</p>
+<p>You can also ask for a daily issue digest:</p>
+<div class="codebox"><div class="codehead"><span>OpenClaw chat</span><button class="copy" type="button">Copy</button></div><pre><code>Create a daily report at 09:00 Europe/Budapest for new issues in nextcloud/mail, nextcloud/contacts, and nextcloud/calendar. Exclude pull requests. Deliver it to this Talk room and record the room token explicitly.
+
+Use the interval since the last successful report, with a clear time range. Include per-app counts, issue titles, and links. Use severity labels only when the issue labels or description justify them; otherwise say untriaged. Keep the report readable and add a short section about issues that need attention.
+
+Show the schedule and destination, then run one delivery test. Avoid creating another job if an equivalent one already exists.</code></pre></div>
+<p>Choose your own timezone. The original session used 09:00 UTC, which is not always 09:00 local time. Inspect the scheduler's run history and confirm a real Talk delivery before relying on the schedule.</p></section><section id="troubleshoot"><h2>When something fails</h2>
+<table><tr><th>Symptom</th><th>Next check</th></tr>
+<tr><td>Docker socket permission denied</td><td>Compare <code>id</code> inside the gateway with <code>stat -c '%g' /var/run/docker.sock</code> on the host. Apply <code>group_add</code> with recreation.</td></tr>
+<tr><td>Tools vanished after recreation</td><td>Build them into the image. Keep credentials and browser profiles in persistent mounts.</td></tr>
+<tr><td>502 from Caddy</td><td>Test <code>http://127.0.0.1:18789/healthz</code> on the VPS. If that fails too, inspect the gateway before changing certificates.</td></tr>
+<tr><td>Gateway is draining for restart</td><td>Restart the OpenClaw container and confirm its uptime resets. A hanging internal restart is different from a completed container restart.</td></tr>
+<tr><td>Proxy attribution required</td><td>Find the immediate proxy peer in gateway logs. Set a narrow <code>gateway.trustedProxies</code> entry and retain Caddy's forwarded-header handling.</td></tr>
+<tr><td>Talk ignores room messages</td><td>Check sender allowlists, room settings, and mention requirements. Confirm the bot is enabled in that room.</td></tr>
+<tr><td>Talk returns 404 or 401</td><td>Check API-user room membership, app password, matching bot secret, and the bot's <code>response</code> feature.</td></tr>
+<tr><td>A second GitHub mention is ignored</td><td>A thread ID is reused. Track notification versions and handled comment IDs, not just the thread ID.</td></tr>
+<tr><td>Browser cannot find the test instance</td><td>Check shared-network DNS, trusted domains, and browser private-host policy. Laptop localhost and container localhost are different.</td></tr>
+<tr><td>Shell reports a date or prompt as a command</td><td>Copy only the code block. Do not paste logs, Markdown link syntax, or <code>root@server#</code>.</td></tr></table>
+<p>Run these on the VPS for a gateway failure:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>cd /opt/openclaw
+docker compose ps -a
+docker compose logs --since=10m --tail=100 openclaw-gateway
+docker inspect --format &#x27;{{json .State.Health}}&#x27; &quot;$(docker compose ps -q openclaw-gateway)&quot;
+curl --max-time 10 -I http://127.0.0.1:18789/healthz</code></pre></div>
+<p>If logs show a stalled restart, restart the container. This interrupts running bot tasks:</p>
+<div class="codebox"><div class="codehead"><span>VPS · terminal</span><button class="copy" type="button">Copy</button></div><pre><code>docker compose restart --timeout 30 openclaw-gateway
+docker compose ps
+docker compose logs --since=2m --tail=60 openclaw-gateway</code></pre></div>
+<p>For Compose changes, use <code>docker compose up -d --no-build --force-recreate openclaw-gateway</code> instead. Never use <code>down -v</code> as a routine repair; it removes volumes.</p></section><section id="finish"><h2>Check the complete flow</h2>
+<ul class="checks"><li><label><input type="checkbox"> The gateway becomes healthy after a restart.</label></li><li><label><input type="checkbox"> The dashboard works through SSH or the client-certificate domain.</label></li><li><label><input type="checkbox"> If using the domain, requests without a client certificate fail.</label></li><li><label><input type="checkbox"> GitHub identity and Git push credentials use the intended bot account.</label></li><li><label><input type="checkbox"> Docker access and the shared development path survive recreation.</label></li><li><label><input type="checkbox"> Nextcloud and the selected apps pass their setup checks.</label></li><li><label><input type="checkbox"> The bot opens an authenticated app page and saves an inspected screenshot.</label></li><li><label><input type="checkbox"> A Talk message receives one acknowledgement and a reply.</label></li><li><label><input type="checkbox"> Two mentions in the same GitHub thread each work without duplicate replies.</label></li><li><label><input type="checkbox"> An unapproved GitHub author cannot trigger work.</label></li><li><label><input type="checkbox"> The daily report reaches the chosen room at the intended timezone.</label></li><li><label><input type="checkbox"> Memory reports a clean full-text index.</label></li></ul>
+<p>The original chats reported successful Talk replies, a daily digest, authenticated Calendar screenshots, and a Contacts before/after reproduction. They also exposed configuration and workflow mistakes. This guide incorporates those lessons without publishing the chat transcripts or their credentials.</p>
+</section><footer>Independent community guide. Refer to the linked upstream documentation for version-specific changes. <a href="https://github.com/hamza221/openclaw-nextcloud-guide/issues">Report a correction</a>.</footer></main></div><div id="copy-status" role="status" aria-live="polite"></div></body></html>

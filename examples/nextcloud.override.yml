@@ -1,0 +1,15 @@
+services:
+  proxy:
+    networks:
+      default: {}
+      dev-access:
+        aliases:
+          - nextcloud.test
+  nextcloud:
+    networks:
+      - default
+      - dev-access
+networks:
+  dev-access:
+    external: true
+    name: nc-dev-access
